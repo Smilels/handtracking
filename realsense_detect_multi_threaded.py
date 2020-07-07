@@ -1,22 +1,27 @@
-from utils import detector_utils as detector_utils
-import cv2
-import tensorflow as tf
-from multiprocessing import Queue, Pool
-import datetime
-import argparse
 import rospy
 from std_msgs.msg import Float64MultiArray
 from cv_bridge import CvBridge, CvBridgeError
 import message_filters
 from sensor_msgs.msg import Image
+import ros_numpy
+
+import sys
+sys.path.remove('/opt/ros/kinetic/lib/python2.7/dist-packages')
+import cv2
+
+from utils import detector_utils as detector_utils
+import tensorflow as tf
+from multiprocessing import Queue, Pool
+import datetime
+import argparse
+
+from scipy import ndimage
+import numpy as np
+from IPython import embed
 
 
 frame_processed = 0
 score_thresh = 0.2
-
-cap = cv2.VideoCapture(0)
-cap.set(3, 640)
-cap.set(4, 480)
 
 pub_bbx = rospy.Publisher('hand_bbx', Float64MultiArray, queue_size=1)
 
@@ -25,20 +30,54 @@ pub_bbx = rospy.Publisher('hand_bbx', Float64MultiArray, queue_size=1)
 rgb_img = []
 depth_img = []
 
-focalLengthX = 475.065948
-focalLengthY = 475.065857
 
-centerX = 315.944855
-centerY = 245.287079
+focalLengthX = 624.3427734375
+focalLengthY = 624.3428344726562
+
+centerX = 305.03887939453125
+centerY = 244.86605834960938
 
 
 def callback(rgb_msg, depth_msg):
     global rgb_img, depth_img
     try:
-        rgb_img = self.bridge.imgmsg_to_cv2(rgb_msg, desired_encoding="passthrough")
-        depth_img = self.bridge.imgmsg_to_cv2(depth_msg, desired_encoding="passthrough")
+        rgb_img = ros_numpy.numpify(rgb_msg)
+        depth_img = ros_numpy.numpify(depth_msg)
     except CvBridgeError as e:
         rospy.logerr(e)
+
+
+def calculateCoM(dpt):
+    """
+    Calculate the center of mass
+    :param dpt: depth image
+    :return: (x,y,z) center of mass
+    """
+
+    dc = dpt.copy()
+    dc[dc < 0] = 0
+    dc[dc > 10000] = 0
+    cc = ndimage.measurements.center_of_mass(dc > 0)
+    num = np.count_nonzero(dc)
+    com = np.array((cc[1]*num, cc[0]*num, dc.sum()), np.float)
+
+    if num == 0:
+        return np.array((0, 0, 0), np.float)
+    else:
+        return com/num
+
+def depth2pc(depth):
+    points = []
+    for v in range(depth.shape[0]):
+        for u in range(depth.shape[1]):
+            Z = int(depth[v, u])
+            if Z == 0:
+                continue
+            X = int((u - centerX) * Z / focalLengthX)
+            Y = int((v - centerY) * Z / focalLengthY)
+            points.append([X, Y, Z])
+    points_np = np.array(points)
+    return points_np
 
 
 def worker(input_q, depth_q, output_q, cap_params, frame_processed):
@@ -52,29 +91,40 @@ def worker(input_q, depth_q, output_q, cap_params, frame_processed):
         frame = input_q.get()
         depth = depth_q.get()
         if frame is not None:
-            # Actual detection. Variable boxes contains the bounding box cordinates for hands detected,
+            # Actual detection. Variable boxes contains the bounding box coordinates for hands detected,
             # while scores contains the confidence for each of these boxes.
             # Hint: If len(boxes) > 1 , you may assume you have found at least one hand (within your score threshold)
 
             boxes, scores = detector_utils.detect_objects(
                 frame, detection_graph, sess)
 
-            # calculate the mass center of the bbx
-            mass_center = np.mean(boxes)
+            ind = np.argmax(scores)
+            bbx = boxes[ind]
+            im_width = frame.shape[1]
+            im_height = frame.shape[0]
+            (left, right, top, bottom) = (bbx[1] * im_width, bbx[3] * im_width,
+                                          bbx[0] * im_height, bbx[2] * im_height)
+            depth_crop = depth[int(top):int(bottom), int(left):int(right)]
 
-            # calculate the xyz of the mass center with respect to camera frame
-            Z = depth[mass_center] - 0.3  # go back 30cm
-            X = (u - centerX) * Z / focalLengthX
-            Y = (v - centerY) * Z / focalLengthY
-            msg = Float64MultiArray()
-            msg.data = np.array([X, Y, Z])
-            pub_bbx.pubslish(boxes)
+            mass_center = calculateCoM(depth_crop)
+            print(np.mean(depth_crop))
+            points = depth2pc(np.array(mass_center[2]).reshape(1, 1)).tolist()
+            print(points)
+
+            # embed()
+            if len(points):
+                msg = Float64MultiArray()
+                msg.data = points[0]
+                pub_bbx.publish(msg)
 
             # draw bounding boxes
             detector_utils.draw_box_on_image(
                 cap_params['num_hands_detect'], cap_params["score_thresh"],
                 scores, boxes, cap_params['im_width'], cap_params['im_height'],
                 frame)
+            cv2.circle(frame, (int(mass_center[0]) + int(left), int(mass_center[1]) + int(top)),
+                       5, (0, 255, 0), -1)
+
             # add frame annotated with bounding box to queue
             output_q.put(frame)
             frame_processed += 1
@@ -84,7 +134,6 @@ def worker(input_q, depth_q, output_q, cap_params, frame_processed):
 
 
 if __name__ == '__main__':
-    global rgb_img, depth_img
     parser = argparse.ArgumentParser()
     parser.add_argument(
         '-src',
@@ -133,7 +182,7 @@ if __name__ == '__main__':
         '--num-workers',
         dest='num_workers',
         type=int,
-        default=4,
+        default=1,
         help='Number of workers.')
     parser.add_argument(
         '-q-size',
@@ -143,6 +192,15 @@ if __name__ == '__main__':
         default=5,
         help='Size of the queue.')
     args = parser.parse_args()
+    rospy.init_node('hand_track_arm')
+    depth_sub = message_filters.Subscriber(
+        '/camera/aligned_depth_to_color/image_raw', Image)
+    rgb_sub = message_filters.Subscriber('/camera/color/image_raw', Image)
+
+    ts = message_filters.ApproximateTimeSynchronizer([rgb_sub, depth_sub], 10, 0.1, allow_headerless=True)
+    ts.registerCallback(callback)
+    # rospy.spin()
+    rospy.sleep(1)
 
     input_q = Queue(maxsize=args.queue_size)
     depth_q = Queue(maxsize=args.queue_size)
@@ -169,21 +227,13 @@ if __name__ == '__main__':
 
     cv2.namedWindow('Multi-Threaded Detection', cv2.WINDOW_NORMAL)
 
-    depth_sub = message_filters.Subscriber('/camera/aligned_depth_to_color/image_raw', Int32)
-    rgb_sub = message_filters.Subscriber('/camera/image_raw', Float32)
-
-    ts = message_filters.ApproximateTimeSynchronizer([rgb_sub, depth_sub], 10, 0.1, allow_headerless=True)
-    ts.registerCallback(callback)
-    rospy.spin()
-
     while True:
-        # ret, oriImg = cap.read()
-        # frame = oriImg
-        # frame = cv2.flip(frame, 1)
         index += 1
+        # embed()
+        input_q.put(rgb_img)
+        depth_q.put(depth_img)
 
-        input_q.put(cv2.cvtColor(rgb_img, cv2.COLOR_BGR2RGB))
-        # todo: check if need to convert to rgb
+        # worker(input_q, depth_q, output_q, cap_params, frame_processed)
         output_frame = output_q.get()
 
         output_frame = cv2.cvtColor(output_frame, cv2.COLOR_RGB2BGR)
@@ -214,6 +264,4 @@ if __name__ == '__main__':
     fps = num_frames / elapsed_time
     print("fps", fps)
     pool.terminate()
-    # video_capture.stop()
-    cap.release()
     cv2.destroyAllWindows()
