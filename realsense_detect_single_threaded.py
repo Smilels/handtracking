@@ -201,7 +201,7 @@ if __name__ == '__main__':
     parser.add_argument('--height', type=int, default=180, help='Height of the frames in the video stream.')
     parser.add_argument('--display2d', type=int, default=1,
                         help='Display the detected images using OpenCV. This reduces FPS')
-    parser.add_argument('--display3d', type=int, default=0,
+    parser.add_argument('--display3d', type=int, default=1,
                         help='Display the detected pointclouds using open3d. This reduces FPS')
     parser.add_argument('--num-workers', type=int, default=4, help='Number of workers.')
     parser.add_argument('--queue-size', type=int, default=5, help='Size of the queue.')
@@ -224,20 +224,27 @@ if __name__ == '__main__':
 
     cv2.namedWindow('Single-Threaded Detection', cv2.WINDOW_NORMAL)
 
+    pcd = o3d.geometry.PointCloud()
+    show_points = o3d.geometry.PointCloud()
     pcd_crop = o3d.geometry.PointCloud()
+    inlier_cloud = o3d.geometry.PointCloud()
+    outlier_cloud = o3d.geometry.PointCloud()
 
     if args.display3d:
         vis = o3d.visualization.Visualizer()
         vis.create_window()
 
-        pcd = o3d.geometry.PointCloud()
         points = depth2pc(depth_img)
         pcd.points = o3d.utility.Vector3dVector(points)
-        pcd_crop.points = o3d.utility.Vector3dVector(points)
+        show_points.points = o3d.utility.Vector3dVector(points)
+        inlier_cloud.points = o3d.utility.Vector3dVector(points)
+        outlier_cloud.points = o3d.utility.Vector3dVector(points)
 
-        vis.add_geometry(pcd)
-        vis.add_geometry(pcd_crop)
-
+        # vis.add_geometry(pcd)
+        vis.add_geometry(show_points)
+        # vis.add_geometry(inlier_cloud)
+        # vis.add_geometry(outlier_cloud)
+    previous_center_point = [[0, 0, 0]]
     while True:
         try:
             image_np = rgb_img
@@ -256,33 +263,32 @@ if __name__ == '__main__':
         (left, right, top, bottom) = (bbx[1] * im_width, bbx[3] * im_width,
                                       bbx[0] * im_height, bbx[2] * im_height)
         depth_crop = depth_np[int(top):int(bottom), int(left):int(right)]
-        print(left, right, top, bottom)
+        # depth_crop[np.where(depth_crop > 900)] = 0
         points_crop = depth2pc(depth_crop, True, int(left), int(top))
         if len(points_crop):
             pcd_crop.points = o3d.utility.Vector3dVector(points_crop)
             cl, ind = pcd_crop.remove_statistical_outlier(nb_neighbors=20,
-                                                        std_ratio=2.0)
-        # display_inlier_outlier(pcd_crop, ind)
+                                                        std_ratio=1.0)
+            pcd.points = o3d.utility.Vector3dVector(points_crop)
+            inlier_cloud = pcd_crop.select_down_sample(ind)
+            outlier_cloud = pcd_crop.select_down_sample(ind, invert=True)
+            center_point = inlier_cloud.get_center()
+            show_points.points = inlier_cloud.points
+        else:
+            center_point = previous_center_point
 
-            mass_center = cl.get_center()
-        # com = calculateCoM(depth_crop)
-        # points_tmp, depth_tmp = clean_depth_map(depth_crop, com, size=cube_size, com_type="2D")
-        # n1 = cv2.normalize(depth_tmp, depth_tmp, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_32F)
-        # cv2.imshow('Depth Detection', n1)
-        # mass_center = calculateCoM(depth_tmp)
-
-        # print(np.mean(depth_crop))
-        # mass_center[0] = mass_center[0] + int(left)
-        # mass_center[1] = mass_center[1] + int(top)
-        # center_point = jointImgTo3D(np.array(mass_center)).tolist()
-        center_point = mass_center
-        # print(center_point)
+        previous_center_point = center_point
+        print(center_point)
 
         if args.display3d:
-            # points_crop = depth2pc(depth_crop, True, int(left), int(top))
             if len(points_crop):
-                pcd.points = o3d.utility.Vector3dVector(points_crop)
-                vis.update_geometry(pcd)
+                outlier_cloud.paint_uniform_color([1, 0, 0])
+                inlier_cloud.paint_uniform_color([0.8, 0.8, 0.8])
+
+                # vis.update_geometry(pcd)
+                vis.update_geometry(show_points)
+                # vis.update_geometry(inlier_cloud)
+                # vis.update_geometry(outlier_cloud)
                 vis.poll_events()
                 vis.update_renderer()
 
@@ -298,8 +304,8 @@ if __name__ == '__main__':
         detector_utils.draw_box_on_image(num_hands_detect, args.scorethreshold,
                                          scores, boxes, im_width, im_height,
                                          image_np)
-        img_center = joint3DToImg(mass_center)
-        cv2.circle(image_np, (int(img_center[0]), int(img_center[1])),
+        center_img = joint3DToImg(center_point)
+        cv2.circle(image_np, (int(center_img[0]), int(center_img[1])),
          5, (0, 255, 0), -1)
 
         # Calculate Frames per second (FPS)
