@@ -10,13 +10,16 @@ sys.path.remove('/opt/ros/kinetic/lib/python2.7/dist-packages')
 import cv2
 
 from utils import detector_utils as detector_utils
+from utils import handdetector
+# from handdetector import HandDetector
+
 import tensorflow as tf
 import datetime
 import argparse
 from scipy import ndimage
 import numpy as np
 from IPython import embed
-
+import open3d as o3d
 
 detection_graph, sess = detector_utils.load_inference_graph()
 pub_bbx = rospy.Publisher('hand_bbx', Float64MultiArray, queue_size=1)
@@ -32,6 +35,17 @@ focalLengthY = 624.3428344726562
 centerX = 305.03887939453125
 centerY = 244.86605834960938
 
+cube_size = [200, 200, 200]
+
+
+def display_inlier_outlier(cloud, ind):
+    inlier_cloud = cloud.select_down_sample(ind)
+    outlier_cloud = cloud.select_down_sample(ind, invert=True)
+
+    print("Showing outliers (red) and inliers (gray): ")
+    outlier_cloud.paint_uniform_color([1, 0, 0])
+    inlier_cloud.paint_uniform_color([0.8, 0.8, 0.8])
+    o3d.visualization.draw_geometries([inlier_cloud, outlier_cloud])
 
 def callback(rgb_msg, depth_msg):
     global rgb_img, depth_img
@@ -62,87 +76,142 @@ def calculateCoM(dpt):
         return com/num
 
 
-def depth2pc(depth):
+def clean_depth_map(depth, com, size, com_type="2D"):
+    if com_type == "2D":
+        com3d = [(com[0] + int(left) - depth.shape[1]/2) * com[2] / focalLengthX,
+                 (com[1] + int(top) - depth.shape[0]/2) * com[2] / focalLengthY, com[2]]
+    else:
+        com3d = com
+    x_min = com3d[0] - size[0] / 2
+    x_max = com3d[0] + size[0] / 2
+    y_min = com3d[1] - size[1] / 2
+    y_max = com3d[1] + size[1] / 2
+    z_min = com3d[2] - size[2] / 2
+    z_max = com3d[2] + size[2] / 2
+
+    points = depth2pc(depth, True, left, top)
+    points_tmp = points.copy()
+    if len(points):
+        hand_points_ind = np.all(
+        np.concatenate((points[:, 0].reshape(-1, 1) > x_min, points[:, 0].reshape(-1, 1) < x_max,
+                        points[:, 1].reshape(-1, 1) > y_min, points[:, 1].reshape(-1, 1) < y_max,
+                        points[:, 2].reshape(-1, 1) > z_min, points[:, 2].reshape(-1, 1) < z_max), axis=1), axis=1)
+        points_tmp = points[hand_points_ind]
+        depth = pc2depth(points[hand_points_ind])
+    return points_tmp, depth
+
+
+def jointsImgTo3D(sample):
+    """
+    Normalize sample to metric 3D
+    :param sample: joints in (x,y,z) with x,y in image coordinates and z in mm
+    :return: normalized joints in mm
+    """
+    ret = np.zeros((sample.shape[0], 3), np.float32)
+    for i in range(sample.shape[0]):
+        ret[i] = jointImgTo3D(sample[i])
+    return ret
+
+
+def jointImgTo3D(sample):
+    """
+    Normalize sample to metric 3D
+    :param sample: joints in (x,y,z) with x,y in image coordinates and z in mm
+    :return: normalized joints in mm
+    """
+    ret = np.zeros((3,), np.float32)
+    # convert to metric using f
+    ret[0] = (sample[0]-centerX)*sample[2]/focalLengthX
+    ret[1] = (sample[1]-centerY)*sample[2]/focalLengthY
+    ret[2] = sample[2]
+    return ret
+
+
+def depth2pc(depth, after_crop=False, left=0, top=0):
     points = []
     for v in range(depth.shape[0]):
         for u in range(depth.shape[1]):
             Z = int(depth[v, u])
             if Z == 0:
                 continue
-            X = int((u - centerX) * Z / focalLengthX)
-            Y = int((v - centerY) * Z / focalLengthY)
+            v_m = v
+            u_m = u
+            if after_crop:
+                v_m = v + int(top)
+                u_m = u + int(left)
+            X = int((u_m - centerX) * Z / focalLengthX)
+            Y = int((v_m - centerY) * Z / focalLengthY)
             points.append([X, Y, Z])
     points_np = np.array(points)
     return points_np
 
-if __name__ == '__main__':
 
+def pc2depth(pc_local):
+    pc = pc_local.copy()
+    width = 640
+    height = 480
+    pc[:, 0] = pc[:, 0] / pc[:, 2].astype(float) * focalLengthX + centerX
+    pc[:, 1] = pc[:, 1] / pc[:, 2].astype(float) * focalLengthY + centerY
+    uvd = []
+    for i in range(pc.shape[0]):
+        if 0 < pc[i, 0] < width and 0 < pc[i, 1] < height:
+            uvd.append(pc[i, :].astype(int))
+    depth = uvd2depth(np.array(uvd), width, height)
+    return depth
+
+
+def depth2uvd(depth):
+    depth = depth.squeeze()
+    v, u = np.where(depth != 0)
+    v = v.reshape(-1, 1)
+    u = u.reshape(-1, 1)
+    return np.concatenate([u, v, depth[v, u]], axis=1)
+
+
+def uvd2depth(uvd, width, height):
+    depth = np.zeros((height, width, 1), np.uint16)
+    depth[uvd[:, 1], uvd[:, 0]] = uvd[:, 2].reshape(-1, 1)
+    return depth
+
+
+def joint3DToImg(sample):
+    """
+    Denormalize sample from metric 3D to image coordinates
+    :param sample: joints in (x,y,z) with x,y and z in mm
+    :return: joints in (x,y,z) with x,y in image coordinates and z in mm
+    """
+    ret = np.zeros((3,), np.float32)
+    # convert to metric using f
+    if sample[2] == 0.:
+        ret[0] = centerX
+        ret[1] = centerY
+        return ret
+    ret[0] = sample[0]/sample[2]*focalLengthX+centerX
+    ret[1] = sample[1]/sample[2]*focalLengthY+centerY
+    ret[2] = sample[2]
+    return ret
+
+
+if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        '-sth',
-        '--scorethreshold',
-        dest='score_thresh',
-        type=float,
-        default=0.5,
-        help='Score threshold for displaying bounding boxes')
-    parser.add_argument(
-        '-fps',
-        '--fps',
-        dest='fps',
-        type=int,
-        default=1,
-        help='Show FPS on detection/display visualization')
-    parser.add_argument(
-        '-src',
-        '--source',
-        dest='video_source',
-        default=0,
-        help='Device index of the camera.')
-    parser.add_argument(
-        '-wd',
-        '--width',
-        dest='width',
-        type=int,
-        default=320,
-        help='Width of the frames in the video stream.')
-    parser.add_argument(
-        '-ht',
-        '--height',
-        dest='height',
-        type=int,
-        default=180,
-        help='Height of the frames in the video stream.')
-    parser.add_argument(
-        '-ds',
-        '--display',
-        dest='display',
-        type=int,
-        default=1,
-        help='Display the detected images using OpenCV. This reduces FPS')
-    parser.add_argument(
-        '-num-w',
-        '--num-workers',
-        dest='num_workers',
-        type=int,
-        default=4,
-        help='Number of workers.')
-    parser.add_argument(
-        '-q-size',
-        '--queue-size',
-        dest='queue_size',
-        type=int,
-        default=5,
-        help='Size of the queue.')
+    parser.add_argument('--scorethreshold', type=float,default=0.5,help='Score threshold for displaying bounding boxes')
+    parser.add_argument('--fps', type=int, default=1, help='Show FPS on detection/display visualization')
+    parser.add_argument('--source', default=0, help='Device index of the camera.')
+    parser.add_argument('--width',type=int,default=320,help='Width of the frames in the video stream.')
+    parser.add_argument('--height', type=int, default=180, help='Height of the frames in the video stream.')
+    parser.add_argument('--display2d', type=int, default=1,
+                        help='Display the detected images using OpenCV. This reduces FPS')
+    parser.add_argument('--display3d', type=int, default=0,
+                        help='Display the detected pointclouds using open3d. This reduces FPS')
+    parser.add_argument('--num-workers', type=int, default=4, help='Number of workers.')
+    parser.add_argument('--queue-size', type=int, default=5, help='Size of the queue.')
     args = parser.parse_args()
 
     rospy.init_node('hand_track_arm')
-
     pub_bbx = rospy.Publisher('hand_bbx', Float64MultiArray, queue_size=1)
-
     depth_sub = message_filters.Subscriber(
         '/camera/aligned_depth_to_color/image_raw', Image)
     rgb_sub = message_filters.Subscriber('/camera/color/image_raw', Image)
-
     ts = message_filters.ApproximateTimeSynchronizer([rgb_sub, depth_sub], 10, 0.1, allow_headerless=True)
     ts.registerCallback(callback)
     rospy.sleep(1)
@@ -155,14 +224,19 @@ if __name__ == '__main__':
 
     cv2.namedWindow('Single-Threaded Detection', cv2.WINDOW_NORMAL)
 
-    # vis = o3d.visualization.Visualizer()
-    # vis.create_window()
+    pcd_crop = o3d.geometry.PointCloud()
 
-    # pcd = o3d.geometry.PointCloud()
-    # pcd.points = o3d.utility.Vector3dVector(np.random.rand(100000, 3))
-    # pcd.colors = o3d.utility.Vector3dVector([[1, 0, 0] for _ in range(100000)])
-    #
-    # vis.add_geometry(pcd)
+    if args.display3d:
+        vis = o3d.visualization.Visualizer()
+        vis.create_window()
+
+        pcd = o3d.geometry.PointCloud()
+        points = depth2pc(depth_img)
+        pcd.points = o3d.utility.Vector3dVector(points)
+        pcd_crop.points = o3d.utility.Vector3dVector(points)
+
+        vis.add_geometry(pcd)
+        vis.add_geometry(pcd_crop)
 
     while True:
         try:
@@ -182,26 +256,50 @@ if __name__ == '__main__':
         (left, right, top, bottom) = (bbx[1] * im_width, bbx[3] * im_width,
                                       bbx[0] * im_height, bbx[2] * im_height)
         depth_crop = depth_np[int(top):int(bottom), int(left):int(right)]
+        print(left, right, top, bottom)
+        points_crop = depth2pc(depth_crop, True, int(left), int(top))
+        if len(points_crop):
+            pcd_crop.points = o3d.utility.Vector3dVector(points_crop)
+            cl, ind = pcd_crop.remove_statistical_outlier(nb_neighbors=20,
+                                                        std_ratio=2.0)
+        # display_inlier_outlier(pcd_crop, ind)
 
-        mass_center = calculateCoM(depth_crop)
-        print(np.mean(depth_crop))
-        points = depth2pc(np.array(mass_center[2]).reshape(1, 1)).tolist()
-        print(points)
+            mass_center = cl.get_center()
+        # com = calculateCoM(depth_crop)
+        # points_tmp, depth_tmp = clean_depth_map(depth_crop, com, size=cube_size, com_type="2D")
+        # n1 = cv2.normalize(depth_tmp, depth_tmp, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_32F)
+        # cv2.imshow('Depth Detection', n1)
+        # mass_center = calculateCoM(depth_tmp)
 
-        # embed()
-        if len(points):
+        # print(np.mean(depth_crop))
+        # mass_center[0] = mass_center[0] + int(left)
+        # mass_center[1] = mass_center[1] + int(top)
+        # center_point = jointImgTo3D(np.array(mass_center)).tolist()
+        center_point = mass_center
+        # print(center_point)
+
+        if args.display3d:
+            # points_crop = depth2pc(depth_crop, True, int(left), int(top))
+            if len(points_crop):
+                pcd.points = o3d.utility.Vector3dVector(points_crop)
+                vis.update_geometry(pcd)
+                vis.poll_events()
+                vis.update_renderer()
+
+        if len(center_point):
             msg = Float64MultiArray()
-            msg.data = points[0]
+            msg.data = center_point[0]
             pub_bbx.publish(msg)
 
         # show depth image
         # n1 = cv2.normalize(depth_np, depth_np, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_32F)
 
         # # draw bounding boxes on frame
-        detector_utils.draw_box_on_image(num_hands_detect, args.score_thresh,
+        detector_utils.draw_box_on_image(num_hands_detect, args.scorethreshold,
                                          scores, boxes, im_width, im_height,
                                          image_np)
-        cv2.circle(image_np, (int(mass_center[0])+int(left), int(mass_center[1])+int(top)),
+        img_center = joint3DToImg(mass_center)
+        cv2.circle(image_np, (int(img_center[0]), int(img_center[1])),
          5, (0, 255, 0), -1)
 
         # Calculate Frames per second (FPS)
@@ -209,9 +307,8 @@ if __name__ == '__main__':
         elapsed_time = (datetime.datetime.now() - start_time).total_seconds()
         fps = num_frames / elapsed_time
 
-        if (args.display > 0):
-            # Display FPS on frame
-            if (args.fps > 0):
+        if args.display2d > 0:
+            if args.fps > 0:
                 detector_utils.draw_fps_on_image("FPS : " + str(int(fps)),
                                                  image_np)
 
