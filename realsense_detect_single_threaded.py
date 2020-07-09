@@ -6,7 +6,7 @@ from sensor_msgs.msg import Image
 import ros_numpy
 
 import sys
-sys.path.remove('/opt/ros/melodic/lib/python2.7/dist-packages')
+sys.path.remove('/opt/ros/kinetic/lib/python2.7/dist-packages')
 import cv2
 
 from utils import detector_utils as detector_utils
@@ -201,7 +201,7 @@ if __name__ == '__main__':
     parser.add_argument('--height', type=int, default=180, help='Height of the frames in the video stream.')
     parser.add_argument('--display2d', type=int, default=1,
                         help='Display the detected images using OpenCV. This reduces FPS')
-    parser.add_argument('--display3d', type=int, default=1,
+    parser.add_argument('--display3d', type=int, default=0,
                         help='Display the detected pointclouds using open3d. This reduces FPS')
     parser.add_argument('--num-workers', type=int, default=4, help='Number of workers.')
     parser.add_argument('--queue-size', type=int, default=5, help='Size of the queue.')
@@ -298,7 +298,7 @@ if __name__ == '__main__':
 
         if len(center_point):
             msg = Float64MultiArray()
-            msg.data = center_point[0]
+            msg.data = center_point
             pub_bbx.publish(msg)
 
         # show depth image
