@@ -6,7 +6,7 @@ from sensor_msgs.msg import Image
 import ros_numpy
 
 import sys
-sys.path.remove('/opt/ros/kinetic/lib/python2.7/dist-packages')
+sys.path.remove('/opt/ros/melodic/lib/python2.7/dist-packages')
 import cv2
 
 from utils import detector_utils as detector_utils
@@ -273,8 +273,12 @@ if __name__ == '__main__':
             inlier_cloud = pcd_crop.select_down_sample(ind)
             outlier_cloud = pcd_crop.select_down_sample(ind, invert=True)
             center_point = inlier_cloud.get_center()
+
+            # if center_point is far away with the previous center point
+
             show_points.points = inlier_cloud.points
         else:
+            # if no hand is detected, use previous center point
             center_point = previous_center_point
 
         previous_center_point = center_point
