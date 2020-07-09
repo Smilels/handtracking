@@ -256,7 +256,9 @@ if __name__ == '__main__':
         # while scores contains the confidence for each of these boxes.
         # Hint: If len(boxes) > 1 , you may assume you have found atleast one hand (within your score threshold)
 
-        boxes, scores = detector_utils.detect_objects(image_np,
+        # boxes, scores = detector_utils.detect_objects(image_np,
+        #                                               detection_graph, sess)
+        boxes, scores = detector_utils.gpu_detect_objects(image_np,
                                                       detection_graph, sess)
         ind = np.argmax(scores)
         bbx = boxes[ind]

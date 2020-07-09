@@ -91,6 +91,32 @@ def detect_objects(image_np, detection_graph, sess):
     return np.squeeze(boxes), np.squeeze(scores)
 
 
+# Actual detection .. generate scores and bounding boxes given an image
+def gpu_detect_objects(image_np, detection_graph, sess):
+    for gpu in ['/gpu:0', '/gpu:1']:
+        with tf.device(gpu):
+            # Definite input and output Tensors for detection_graph
+            image_tensor = detection_graph.get_tensor_by_name('image_tensor:0')
+            # Each box represents a part of the image where a particular object was detected.
+            detection_boxes = detection_graph.get_tensor_by_name(
+                'detection_boxes:0')
+            # Each score represent how level of confidence for each of the objects.
+            # Score is shown on the result image, together with the class label.
+            detection_scores = detection_graph.get_tensor_by_name(
+                'detection_scores:0')
+            detection_classes = detection_graph.get_tensor_by_name(
+                'detection_classes:0')
+            num_detections = detection_graph.get_tensor_by_name(
+                'num_detections:0')
+
+            image_np_expanded = np.expand_dims(image_np, axis=0)
+
+    (boxes, scores, classes, num) = sess.run(
+                [detection_boxes, detection_scores,
+                    detection_classes, num_detections],
+                feed_dict={image_tensor: image_np_expanded})
+    return np.squeeze(boxes), np.squeeze(scores)
+
 # Code to thread reading camera input.
 # Source : Adrian Rosebrock
 # https://www.pyimagesearch.com/2017/02/06/faster-video-file-fps-with-cv2-videocapture-and-opencv/
