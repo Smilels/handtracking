@@ -220,7 +220,7 @@ if __name__ == '__main__':
     num_frames = 0
     im_width, im_height = (640, 480)
     # max number of hands we want to detect/track
-    num_hands_detect = 2
+    num_hands_detect = 3
     if args.display2d > 0:
         cv2.namedWindow('Single-Threaded Detection', cv2.WINDOW_NORMAL)
 
@@ -251,7 +251,8 @@ if __name__ == '__main__':
             depth_np = depth_img
         except:
             print("Error converting to RGB")
-
+        # image_np  =  np.flipud(image_np)
+        # depth_np  =  np.flipud(depth_np)
         # Actual detection. Variable boxes contains the bounding box cordinates for hands detected,
         # while scores contains the confidence for each of these boxes.
         # Hint: If len(boxes) > 1 , you may assume you have found atleast one hand (within your score threshold)
