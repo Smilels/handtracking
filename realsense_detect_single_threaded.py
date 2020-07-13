@@ -6,6 +6,7 @@ from sensor_msgs.msg import Image
 import ros_numpy
 
 import sys
+import os
 sys.path.remove('/opt/ros/kinetic/lib/python2.7/dist-packages')
 import cv2
 
@@ -203,7 +204,6 @@ if __name__ == '__main__':
                         help='Display the detected images using OpenCV. This reduces FPS')
     parser.add_argument('--display3d', type=int, default=0,
                         help='Display the detected pointclouds using open3d. This reduces FPS')
-    parser.add_argument('--num-workers', type=int, default=4, help='Number of workers.')
     parser.add_argument('--queue-size', type=int, default=5, help='Size of the queue.')
     args = parser.parse_args()
 
@@ -221,8 +221,8 @@ if __name__ == '__main__':
     im_width, im_height = (640, 480)
     # max number of hands we want to detect/track
     num_hands_detect = 2
-
-    cv2.namedWindow('Single-Threaded Detection', cv2.WINDOW_NORMAL)
+    if args.display2d > 0:
+        cv2.namedWindow('Single-Threaded Detection', cv2.WINDOW_NORMAL)
 
     pcd = o3d.geometry.PointCloud()
     show_points = o3d.geometry.PointCloud()
@@ -244,7 +244,7 @@ if __name__ == '__main__':
         vis.add_geometry(show_points)
         # vis.add_geometry(inlier_cloud)
         # vis.add_geometry(outlier_cloud)
-    previous_center_point = [[0, 0, 0]]
+    previous_center_point = np.array([0, 0, 0])
     while True:
         try:
             image_np = rgb_img
@@ -260,6 +260,8 @@ if __name__ == '__main__':
         #                                               detection_graph, sess)
         boxes, scores = detector_utils.gpu_detect_objects(image_np,
                                                       detection_graph, sess)
+        # embed()
+
         ind = np.argmax(scores)
         bbx = boxes[ind]
         (left, right, top, bottom) = (bbx[1] * im_width, bbx[3] * im_width,
