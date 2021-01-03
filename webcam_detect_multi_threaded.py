@@ -20,7 +20,7 @@ cap.set(4, 480)
 def worker(input_q, output_q, cap_params, frame_processed):
     print(">> loading frozen model for worker")
     detection_graph, sess = detector_utils.load_inference_graph()
-    sess = tf.Session(graph=detection_graph)
+    sess = tf.compat.v1.Session(graph=detection_graph)
     while True:
         # print("> ===== in worker loop, frame ", frame_processed)
         frame = input_q.get()
@@ -94,7 +94,7 @@ if __name__ == '__main__':
         '--num-workers',
         dest='num_workers',
         type=int,
-        default=4,
+        default=1,
         help='Number of workers.')
     parser.add_argument(
         '-q-size',

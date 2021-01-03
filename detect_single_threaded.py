@@ -55,7 +55,7 @@ if __name__ == '__main__':
         '--num-workers',
         dest='num_workers',
         type=int,
-        default=4,
+        default=1,
         help='Number of workers.')
     parser.add_argument(
         '-q-size',
@@ -76,7 +76,7 @@ if __name__ == '__main__':
     # max number of hands we want to detect/track
     num_hands_detect = 2
 
-    cv2.namedWindow('Single-Threaded Detection', cv2.WINDOW_NORMAL)
+    cv2.namedWindow('Single-Theraded Detection', cv2.WINDOW_NORMAL)
 
     while True:
         # Expand dimensions since the model expects images to have shape: [1, None, None, 3]
